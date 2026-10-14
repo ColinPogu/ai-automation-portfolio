@@ -1,0 +1,8 @@
+# Never commit real secrets. Only .env.example belongs in the repo.
+.env
+.env.*
+!.env.example
+
+# Local n8n data if you run it from this folder
+.n8n/
+*.log

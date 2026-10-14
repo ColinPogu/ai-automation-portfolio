@@ -1,0 +1,6 @@
+first_name,last_name,email,company,role,website,industry
+Maria,Delgado,maria@northwindlogistics.example,Northwind Logistics,Operations Manager,https://northwindlogistics.example,freight
+James,Okonkwo,james.o@brightpath-dental.example,Brightpath Dental,Practice Owner,https://brightpath-dental.example,healthcare
+Priya,Venkatesh,priya@lumaanalytics.example,Luma Analytics,Head of Growth,https://lumaanalytics.example,software
+Tobias,Hansen,,Fjord Outdoor Co,Ecommerce Lead,https://fjordoutdoor.example,retail
+Sofia,Marchetti,sofia@verdecatering.example,Verde Catering,Founder,https://verdecatering.example,hospitality

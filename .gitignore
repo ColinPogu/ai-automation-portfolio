@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+token.json
+credentials.json
+*.jsonl
+*.sqlite
+*.db

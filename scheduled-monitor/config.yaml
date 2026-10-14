@@ -1,0 +1,60 @@
+# Scheduled Monitor configuration.
+#
+# Every target is fetched on each pass. Edit this list to monitor your own
+# pages or APIs. Nothing here is secret. The Slack webhook lives in .env.
+#
+# Per target fields:
+#   name       a unique label, used in the database and in alerts
+#   url        the page or API endpoint to fetch
+#   type       html (parse with a CSS selector) or json (dotted path)
+#   selector   CSS selector for html, or a dotted path like "data.count" for json
+#   extract    number (parse a number), text (raw text), or exists (did it match)
+#   rule       below, above, increase, decrease, back_in_stock, contains, change
+#   threshold  the number the rule compares against (meaning depends on the rule)
+#   keyword    used by the contains rule, and by back_in_stock on text extracts
+
+defaults:
+  timeout_seconds: 20
+  retries: 3
+  retry_backoff_seconds: 2
+  user_agent: "ScheduledMonitor/1.0 (+https://example.com/monitor-bot)"
+
+# Interval used only when the monitor is started with --loop.
+schedule:
+  every_minutes: 30
+
+targets:
+  # 1) Price drop: alert when the price falls to 50 or below.
+  - name: "Widget price"
+    url: "https://example.com/products/widget"
+    type: "html"
+    selector: "span.price"
+    extract: "number"
+    rule: "below"
+    threshold: 50.0
+
+  # 2) Back in stock: alert when an add to cart button appears.
+  - name: "Widget stock"
+    url: "https://example.com/products/widget"
+    type: "html"
+    selector: "button.add-to-cart"
+    extract: "exists"
+    rule: "back_in_stock"
+
+  # 3) Count spike: alert when an API count rises by 100 or more in one pass.
+  - name: "Signups today"
+    url: "https://api.example.com/v1/stats"
+    type: "json"
+    selector: "data.signups_today"
+    extract: "number"
+    rule: "increase"
+    threshold: 100
+
+  # 4) Keyword watch: alert the first time a status page says "degraded".
+  - name: "Status page"
+    url: "https://example.com/status"
+    type: "html"
+    selector: "#system-status"
+    extract: "text"
+    rule: "contains"
+    keyword: "degraded"
