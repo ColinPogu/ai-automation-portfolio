@@ -1,8 +1,28 @@
 """Gmail helpers: OAuth login, list, fetch, and draft creation.
 
-Only two scopes are requested, both draft-first. There is no gmail.send
-scope here on purpose, so this client physically cannot send mail even if
-something downstream asked it to.
+Scope and the send boundary (the honest version).
+
+Google does not publish a "create drafts but can never send" scope.
+gmail.compose is the least-privilege scope that can write a draft, and that
+same scope technically also permits drafts.send and messages.send. So the
+draft-only boundary cannot be proven by the scope string alone; it is
+enforced in the application layer and is verifiable three ways:
+
+1. This module calls exactly one write on a Gmail resource,
+   ``service.users().drafts().create(...)``. There is no send call (neither
+   drafts.send nor messages.send) on any Gmail resource anywhere in the
+   package. tests/test_no_send.py asserts that statically, so a future edit
+   that adds a send path fails CI.
+2. SCOPES is pinned to readonly + compose. _assert_safe_scopes() refuses to
+   run if a broader scope (gmail.send, gmail.modify, or full mail.google.com)
+   is ever added. tests/test_no_send.py checks this too.
+3. Operationally, the OAuth client is a desktop app with no domain-wide
+   delegation, the consent screen lists only these two scopes, and the token
+   is per-user. Revoking it stops the agent; it cannot act for other users.
+
+The consent screen will still say the app can "send email on your behalf",
+because that wording tracks the compose scope. That is the known gap, and
+the three controls above are how the intended boundary is actually held.
 """
 
 import base64
@@ -20,6 +40,26 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
 ]
+
+# Scopes that would let this client send or mutate mail. Must stay empty of
+# overlap with SCOPES; _assert_safe_scopes() enforces it at startup.
+FORBIDDEN_SCOPES = {
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://mail.google.com/",
+}
+
+
+def _assert_safe_scopes():
+    bad = FORBIDDEN_SCOPES.intersection(SCOPES)
+    if bad:
+        raise RuntimeError(
+            "Refusing to start: draft-only boundary violated by scope(s) %s"
+            % ", ".join(sorted(bad))
+        )
+
+
+_assert_safe_scopes()
 
 
 def get_service(client_secrets, token_file):

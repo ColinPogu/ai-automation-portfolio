@@ -16,6 +16,20 @@ Python. Watches a configurable list of pages or endpoints on a schedule, extract
 ## How I build
 Every one of these follows the same principles: config over hardcoding, secrets in environment variables, a human in the loop wherever a mistake would be costly, and logs so you can see exactly what ran. The stack is the Claude Agent SDK and the Anthropic API, n8n and Make for orchestration, and Python and JavaScript for the custom pieces.
 
+## Reliability
+The difference between a demo and something you can leave running is in the
+failure handling: no duplicate drafts on re-runs or overlapping runs, model
+output that fails closed when it is malformed, a draft-only boundary that is
+enforced in code rather than assumed, bounded spend per run, and alerts that
+survive a Slack outage instead of being lost when the baseline advances.
+Each of those is implemented and tested. See **[RELIABILITY.md](./RELIABILITY.md)**
+for the point-by-point map of risk to code to test. Run the suite from either
+Python project folder:
+
+    python -m unittest discover -s tests -t . -v
+
+30 tests, no network or API key required.
+
 ## See also
 - Growth and attribution case study: https://colinpogu.github.io/affiliate-case-study/
 - Growth engineering portfolio (edge attribution Worker + ops pipeline): https://github.com/ColinPogu/growth-engineering-portfolio

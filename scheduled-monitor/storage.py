@@ -27,6 +27,21 @@ CREATE TABLE IF NOT EXISTS readings (
     ts        TEXT    NOT NULL    -- UTC ISO 8601
 );
 CREATE INDEX IF NOT EXISTS idx_readings_target_id ON readings (target, id);
+
+-- Durable alert outbox. An alert is written here the moment it triggers,
+-- BEFORE delivery is attempted. It is removed only after Slack confirms
+-- receipt. So the reading baseline can advance (the edge trigger will not
+-- fire twice) without ever losing an alert whose delivery failed: the row
+-- survives the crash or outage and is retried on the next pass.
+CREATE TABLE IF NOT EXISTS pending_alerts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_key       TEXT    NOT NULL UNIQUE,
+    payload         TEXT    NOT NULL,   -- JSON alert payload
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    first_ts        TEXT    NOT NULL,
+    last_attempt_ts TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_key ON pending_alerts (alert_key);
 """
 
 
@@ -93,3 +108,50 @@ def history(conn, target, limit=50):
         """,
         (target, limit),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# pending alert outbox
+# ---------------------------------------------------------------------------
+def enqueue_alert(conn, alert_key, payload_json):
+    """Add an alert to the durable outbox. Returns True if newly enqueued.
+
+    INSERT OR IGNORE on the unique alert_key makes this idempotent: the same
+    alert enqueued twice (for example, two overlapping passes) produces a
+    single pending row, so retries never fan out into duplicate messages.
+    """
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO pending_alerts (alert_key, payload, first_ts) "
+        "VALUES (?, ?, ?)",
+        (alert_key, payload_json, utc_now_iso()),
+    )
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def list_pending(conn, limit=100):
+    """Oldest-first pending alerts, so delivery preserves order."""
+    return conn.execute(
+        "SELECT * FROM pending_alerts ORDER BY id ASC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def mark_attempt(conn, alert_id):
+    """Record that a delivery was attempted (bumps attempts + timestamp)."""
+    conn.execute(
+        "UPDATE pending_alerts SET attempts = attempts + 1, last_attempt_ts = ? "
+        "WHERE id = ?",
+        (utc_now_iso(), alert_id),
+    )
+    conn.commit()
+
+
+def delete_alert(conn, alert_id):
+    """Remove a pending alert once Slack has confirmed receipt."""
+    conn.execute("DELETE FROM pending_alerts WHERE id = ?", (alert_id,))
+    conn.commit()
+
+
+def count_pending(conn):
+    return conn.execute("SELECT COUNT(*) FROM pending_alerts").fetchone()[0]

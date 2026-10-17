@@ -19,6 +19,8 @@ Secrets come from the environment (see .env.example). Nothing is hardcoded.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import logging
 import os
 import re
@@ -310,11 +312,11 @@ def check_target(session, conn, target, defaults, webhook, dry_run):
         return False
 
     triggered, headline = evaluate(rule, prev, reading, threshold, keyword)
-    storage.save_reading(conn, reading)
-    log_event(logging.INFO, "check_ok", target=name, rule=rule,
-              value=reading["value"], in_stock=reading["in_stock"],
-              triggered=triggered)
 
+    # Enqueue the alert into the durable outbox BEFORE advancing the baseline.
+    # If the process dies between these two writes, the worst case is a
+    # pending alert with no saved reading, which redelivers the same alert.
+    # That is the safe failure direction: we never silently drop an alert.
     if triggered:
         payload = {
             "target": name,
@@ -325,11 +327,62 @@ def check_target(session, conn, target, defaults, webhook, dry_run):
             "current": display_reading(reading),
             "timestamp": ts,
         }
-        notify.send(webhook, payload, dry_run=dry_run,
-                    retries=defaults["retries"],
-                    backoff=defaults["retry_backoff_seconds"],
-                    logger=logger)
+        if storage.enqueue_alert(conn, alert_key(payload), json.dumps(payload)):
+            log_event(logging.INFO, "alert_enqueued", target=name,
+                      key=alert_key(payload))
+
+    storage.save_reading(conn, reading)
+    log_event(logging.INFO, "check_ok", target=name, rule=rule,
+              value=reading["value"], in_stock=reading["in_stock"],
+              triggered=triggered)
     return triggered
+
+
+def alert_key(payload):
+    """Stable, collision-resistant key for one alert event.
+
+    Built from the fields that identify a distinct firing. Enqueuing the same
+    event twice is a no-op (unique key), so overlapping passes cannot create
+    duplicate messages.
+    """
+    basis = "|".join(
+        str(payload.get(field, ""))
+        for field in ("target", "timestamp", "rule", "headline")
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def flush_pending(conn, webhook, defaults, dry_run):
+    """Attempt delivery of every pending alert; keep failures for next time.
+
+    This is the whole durability guarantee: an alert leaves the outbox only
+    after notify.send returns True. A failed Slack post stays pending and is
+    retried on the next pass, no matter how far the reading baseline has
+    moved on.
+    """
+    delivered = 0
+    still_pending = 0
+    for row in storage.list_pending(conn):
+        payload = json.loads(row["payload"])
+        storage.mark_attempt(conn, row["id"])
+        ok = notify.send(
+            webhook, payload, dry_run=dry_run,
+            retries=defaults["retries"],
+            backoff=defaults["retry_backoff_seconds"],
+            logger=logger,
+        )
+        if ok:
+            storage.delete_alert(conn, row["id"])
+            delivered += 1
+        else:
+            still_pending += 1
+            log_event(logging.WARNING, "alert_still_pending",
+                      target=payload.get("target"), key=row["alert_key"],
+                      attempts=row["attempts"] + 1)
+    if delivered or still_pending:
+        log_event(logging.INFO, "flush_done",
+                  delivered=delivered, still_pending=still_pending)
+    return delivered, still_pending
 
 
 def merge_defaults(config):
@@ -348,6 +401,9 @@ def run_once(config, db_path, webhook, dry_run, only=None):
     checked = 0
     alerts = 0
     with storage.connect(db_path) as conn:
+        # Retry anything a previous pass could not deliver, first thing.
+        flush_pending(conn, webhook, defaults, dry_run)
+
         for target in targets:
             if only and target.get("name") != only:
                 continue
@@ -358,8 +414,12 @@ def run_once(config, db_path, webhook, dry_run, only=None):
             except Exception as exc:  # defensive, keep the pass alive
                 log_event(logging.ERROR, "target_failed",
                           target=target.get("name", target.get("url")), error=exc)
+
+        # Deliver everything this pass just enqueued; survivors stay pending.
+        flush_pending(conn, webhook, defaults, dry_run)
+        outstanding = storage.count_pending(conn)
     log_event(logging.INFO, "pass_done", checked=checked, alerts=alerts,
-              dry_run=dry_run)
+              pending=outstanding, dry_run=dry_run)
     return alerts
 
 
